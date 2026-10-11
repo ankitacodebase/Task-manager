@@ -1,0 +1,74 @@
+flowchart TD
+    %% =========================================================================
+    %% TaskFlow Enterprise — Complete End-to-End System Flow (Single Diagram)
+    %% Paste this entire code into https://mermaid.live/ or https://mermaid.ai/
+    %% =========================================================================
+
+    subgraph Auth ["1. Tenant Onboarding & Authentication"]
+        A1(["User Enters Email & Password"]) --> A2{"Email Exists in Database?"}
+        A2 -- "New Email" --> A3["Create Tenant & Unverified Admin"]
+        A2 -- "Exists but Unverified" --> A4["Refresh Password & Re-send OTP"]
+        A2 -- "Already Verified" --> A5["Show Login / 409 Conflict"]
+        A3 --> A6["Dispatch 6-Digit OTP via Email"]
+        A4 --> A6
+        A6 --> A7["User Verifies OTP"]
+        A7 --> A8["Mark Verified & Issue HttpOnly JWT Token"]
+    end
+
+    subgraph ProjectSetup ["2. Project Initialization"]
+        A8 --> B1["Admin Creates Project e.g. DEV Prefix"]
+        B1 --> B2["Initialize Atomic Task Counter"]
+        B2 --> B3["Add Team Members (Manager, Contributor, Viewer)"]
+    end
+
+    subgraph TaskCreation ["3. Task Creation & Atomic Sequencing"]
+        B3 --> C1(["User / Lead Creates Task"])
+        C1 --> C2["ACID Transaction: Lock Project Counter FOR UPDATE"]
+        C2 --> C3["Assign Sequential Key: DEV-1, DEV-2 (No Duplicates)"]
+        C3 --> C4["Save Task in MySQL with version = 1"]
+        C4 --> C5["Dispatch Assignment Email to Employee"]
+    end
+
+    subgraph KanbanExecution ["4. Kanban Board & Direct Drag-and-Drop"]
+        C4 --> D1["Task Appears in 'To Do' Column"]
+        D1 --> D2["Employee Drags Card: 'To Do' -> 'In Progress'"]
+        D2 --> D3["Optimistic Lock Check: version matches?"]
+        D3 -- "Match" --> D4["Commit Status Change (version + 1)"]
+        D3 -- "Conflict" --> D5["Alert: Concurrent Edit Detected"]
+        D4 --> D6["Employee Drags to 'In Review'"]
+    end
+
+    subgraph LiveSync ["5. Real-Time WebSockets & On-Card Discussion"]
+        D4 -.->|"Event: TASK_UPDATED"| E1["FastAPI WebSocket Hub"]
+        D6 -.->|"Event: STATUS_CHANGED"| E1
+        E1 -->|"Instant Push"| E2["Admin Kanban Board Moves Card in Real-Time"]
+        E1 -->|"Instant Push"| E3["Teammate Table View Updates Badge"]
+        
+        D6 --> E4["Employee Adds Inline Comment on Card"]
+        E4 --> E5["Record in task_comments & Log Immutable Activity"]
+        E5 -.->|"Event: COMMENT_ADDED"| E1
+    end
+
+    subgraph ReviewGate ["6. Review Approval & Completion"]
+        D6 --> F1{"Admin / Lead Reviews Work"}
+        F1 -- "Changes Requested" --> F2["Return to 'In Progress' & Email Employee"]
+        F2 --> D2
+        F1 -- "Approved" --> F3["Move Status to 'Done'"]
+        F3 --> F4["Log Final Completion & Verify Requirement Link"]
+        F4 --> F5(["Sprint Deliverable Completed"])
+    end
+
+    %% Visual Styling
+    classDef authStyle fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e3a8a;
+    classDef projStyle fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,color:#14532d;
+    classDef taskStyle fill:#fefce8,stroke:#eab308,stroke-width:2px,color:#713f12;
+    classDef kanbanStyle fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#581c87;
+    classDef wsStyle fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#7c2d12;
+    classDef reviewStyle fill:#f0fdfa,stroke:#14b8a6,stroke-width:2px,color:#134e4a;
+
+    class A1,A2,A3,A4,A5,A6,A7,A8 authStyle;
+    class B1,B2,B3 projStyle;
+    class C1,C2,C3,C4,C5 taskStyle;
+    class D1,D2,D3,D4,D5,D6 kanbanStyle;
+    class E1,E2,E3,E4,E5 wsStyle;
+    class F1,F2,F3,F4,F5 reviewStyle;

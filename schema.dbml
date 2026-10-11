@@ -1,0 +1,275 @@
+// TaskFlow Enterprise — Complete Database Relationship Architecture
+// Designed for https://dbdiagram.io/ (DBML - Database Markup Language)
+
+Project TaskFlowEnterprise {
+  database_type: 'MySQL'
+  Note: '''
+    # TaskFlow Enterprise Database Architecture
+    Production multi-tenant B2B project & task management system.
+    Supports ACID transactions, atomic sequential keys, WebSockets live sync,
+    and optimistic concurrency locking.
+  '''
+}
+
+// 1. Tenants (Workspace Isolation)
+Table tenants {
+  id varchar(36) [pk, note: 'UUID Tenant identifier']
+  name varchar(100) [not null, note: 'Organization / Workspace name']
+  status varchar(20) [not null, default: 'ACTIVE', note: 'ACTIVE | SUSPENDED']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// 2. Users (Authentication & Identity)
+Table users {
+  id varchar(36) [pk, note: 'UUID User identifier']
+  tenant_id varchar(36) [not null]
+  email varchar(255) [unique, not null]
+  password_hash varchar(255) [not null, note: 'Argon2id hashed']
+  full_name varchar(100) [not null]
+  role varchar(20) [not null, default: 'USER', note: 'SUPER_ADMIN | ADMIN | USER']
+  is_active boolean [not null, default: true]
+  is_verified boolean [not null, default: false]
+  is_2fa_enabled boolean [not null, default: false]
+  totp_secret varchar(64) [null]
+  email_otp_hash varchar(255) [null]
+  email_otp_expires_at datetime [null]
+  reset_token_hash varchar(255) [null]
+  reset_token_expires_at datetime [null]
+  failed_login_attempts int [not null, default: 0]
+  lockout_until datetime [null]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// 3. Notification Preferences (User Alert Toggles)
+Table notification_preferences {
+  user_id varchar(36) [pk]
+  email_on_assignment boolean [not null, default: true]
+  email_on_review boolean [not null, default: true]
+  email_on_deadline boolean [not null, default: true]
+  email_digest_daily boolean [not null, default: false]
+}
+
+// 4. Projects (Segregated Workspaces)
+Table projects {
+  id varchar(36) [pk, note: 'UUID Project identifier']
+  tenant_id varchar(36) [not null]
+  name varchar(100) [not null]
+  project_key varchar(10) [not null, note: 'Prefix (e.g. DEV, MKT)']
+  description text [null]
+  status varchar(20) [not null, default: 'ACTIVE', note: 'ACTIVE | ARCHIVED']
+  created_by varchar(36) [not null]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+
+  indexes {
+    (tenant_id, project_key) [unique]
+  }
+}
+
+// 5. Project Counters (Atomic Task Key Sequencing)
+Table project_counters {
+  project_id varchar(36) [pk]
+  last_task_number int [not null, default: 0, note: 'Row-locked via SELECT FOR UPDATE']
+}
+
+// 6. Project Members (Project-level RBAC)
+Table project_members {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  project_id varchar(36) [not null]
+  user_id varchar(36) [not null]
+  role varchar(20) [not null, default: 'CONTRIBUTOR', note: 'MANAGER | CONTRIBUTOR | VIEWER']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+
+  indexes {
+    (project_id, user_id) [unique]
+  }
+}
+
+// 7. Tasks (Core Task Entity)
+Table tasks {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  project_id varchar(36) [not null]
+  task_number int [not null]
+  task_key varchar(20) [not null, note: 'Human-readable key, e.g. DEV-14']
+  title varchar(255) [not null]
+  description mediumtext [null]
+  status varchar(20) [not null, default: 'TODO', note: 'BACKLOG | TODO | IN_PROGRESS | IN_REVIEW | BLOCKED | DONE | CANCELLED']
+  priority varchar(20) [not null, default: 'MEDIUM', note: 'LOW | MEDIUM | HIGH | URGENT']
+  creator_id varchar(36) [not null]
+  assignee_id varchar(36) [null]
+  due_date datetime [null]
+  start_date datetime [null]
+  estimated_hours decimal(6,2) [null]
+  actual_hours decimal(6,2) [not null, default: 0.00]
+  parent_task_id varchar(36) [null, note: 'Parent task for subtasks']
+  version int [not null, default: 1, note: 'Optimistic concurrency control']
+  is_archived boolean [not null, default: false]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+
+  indexes {
+    (tenant_id, task_key) [unique]
+    (tenant_id, project_id, is_archived, status)
+  }
+}
+
+// 8. Task Dependencies (Blocker Relationships)
+Table task_dependencies {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  depends_on_id varchar(36) [not null]
+  created_at timestamp [default: `now()`]
+
+  indexes {
+    (task_id, depends_on_id) [unique]
+  }
+}
+
+// 9. Task Comments (Inline Discussions)
+Table task_comments {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  user_id varchar(36) [not null]
+  content text [not null]
+  parent_comment_id varchar(36) [null, note: 'Threaded replies']
+  is_deleted boolean [not null, default: false]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// 10. Task Activities (Audit Log)
+Table task_activities {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  user_id varchar(36) [not null]
+  activity_type varchar(50) [not null, note: 'STATUS_CHANGE | ASSIGNMENT | PRIORITY_CHANGE | COMMENT_ADDED']
+  from_value varchar(255) [null]
+  to_value varchar(255) [null]
+  created_at timestamp [default: `now()`]
+}
+
+// 11. Task Attachments (File Upload Metadata)
+Table task_attachments {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  user_id varchar(36) [not null]
+  filename varchar(255) [not null]
+  file_size_bytes bigint [not null]
+  mime_type varchar(100) [not null]
+  storage_key varchar(500) [not null]
+  created_at timestamp [default: `now()`]
+}
+
+// 12. Task Labels (Custom Tags)
+Table task_labels {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  project_id varchar(36) [not null]
+  name varchar(50) [not null]
+  color_hex varchar(7) [not null, default: '#6366F1']
+  created_at timestamp [default: `now()`]
+
+  indexes {
+    (project_id, name) [unique]
+  }
+}
+
+// 13. Task Label Mappings (Many-to-Many Tags)
+Table task_label_mappings {
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  label_id varchar(36) [not null]
+
+  indexes {
+    (task_id, label_id) [pk]
+  }
+}
+
+// 14. Task Reviews (QA & Approval Workflows)
+Table task_reviews {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  reviewer_id varchar(36) [not null]
+  status varchar(20) [not null, default: 'PENDING', note: 'PENDING | APPROVED | CHANGES_REQUESTED']
+  feedback_notes text [null]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// 15. Notifications (In-App Ledger)
+Table notifications {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  user_id varchar(36) [not null]
+  task_id varchar(36) [null]
+  title varchar(255) [not null]
+  message text [not null]
+  type varchar(50) [not null]
+  is_read boolean [not null, default: false]
+  created_at timestamp [default: `now()`]
+}
+
+// 16. Task Source Links (Requirement Traceability)
+Table task_source_links {
+  id varchar(36) [pk]
+  tenant_id varchar(36) [not null]
+  task_id varchar(36) [not null]
+  source_story_id varchar(100) [not null]
+  source_requirement_id varchar(100) [not null]
+  link_type varchar(30) [not null, default: 'SATISFIES', note: 'SATISFIES | DERIVED_FROM | VERIFIES']
+  created_at timestamp [default: `now()`]
+}
+
+// ==========================================
+// RELATIONSHIPS & FOREIGN KEYS
+// ==========================================
+
+// Tenants Relations
+Ref: users.tenant_id > tenants.id [delete: cascade]
+Ref: projects.tenant_id > tenants.id [delete: cascade]
+Ref: project_members.tenant_id > tenants.id [delete: cascade]
+Ref: tasks.tenant_id > tenants.id [delete: cascade]
+Ref: task_labels.tenant_id > tenants.id [delete: cascade]
+Ref: notifications.tenant_id > tenants.id [delete: cascade]
+
+// Users Relations
+Ref: notification_preferences.user_id - users.id [delete: cascade]
+Ref: projects.created_by > users.id
+Ref: project_members.user_id > users.id [delete: cascade]
+Ref: tasks.creator_id > users.id
+Ref: tasks.assignee_id > users.id [delete: set null]
+Ref: task_comments.user_id > users.id [delete: cascade]
+Ref: task_activities.user_id > users.id [delete: cascade]
+Ref: task_attachments.user_id > users.id [delete: cascade]
+Ref: task_reviews.reviewer_id > users.id [delete: cascade]
+Ref: notifications.user_id > users.id [delete: cascade]
+
+// Projects Relations
+Ref: project_counters.project_id - projects.id [delete: cascade]
+Ref: project_members.project_id > projects.id [delete: cascade]
+Ref: tasks.project_id > projects.id [delete: cascade]
+Ref: task_labels.project_id > projects.id [delete: cascade]
+
+// Tasks Relations
+Ref: tasks.parent_task_id - tasks.id [delete: set null]
+Ref: task_dependencies.task_id > tasks.id [delete: cascade]
+Ref: task_dependencies.depends_on_id > tasks.id [delete: cascade]
+Ref: task_comments.task_id > tasks.id [delete: cascade]
+Ref: task_comments.parent_comment_id - task_comments.id [delete: cascade]
+Ref: task_activities.task_id > tasks.id [delete: cascade]
+Ref: task_attachments.task_id > tasks.id [delete: cascade]
+Ref: task_label_mappings.task_id > tasks.id [delete: cascade]
+Ref: task_label_mappings.label_id > task_labels.id [delete: cascade]
+Ref: task_reviews.task_id > tasks.id [delete: cascade]
+Ref: notifications.task_id > tasks.id [delete: set null]
+Ref: task_source_links.task_id > tasks.id [delete: cascade]
